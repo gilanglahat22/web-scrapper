@@ -109,3 +109,104 @@ in the same directory if needed.
 - For Levels 2 and 3, **explore the portal manually with your browser** before
   writing code — it is the best way to understand the structure
 - The Level 1 functions are useful in Level 2 — reuse them
+
+---
+
+## Solution Documentation
+
+This repository includes the full implementation for all three levels in
+`candidate/`:
+
+- `candidate/parsers.py`: Italian money parsing, date parsing, and CIG
+  validation.
+- `candidate/scraper.py`: Maggioli-style portal scraping into `TenderResult`.
+- `candidate/enricher.py`: ANAC-style CIG enrichment into `CIGDetail`.
+
+### Setup and Run
+
+Use Python 3.11 or newer.
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+playwright install chromium
+uvicorn mock_server.app:app --host 127.0.0.1 --port 18080
+```
+
+In another terminal, verify the mock server:
+
+```bash
+curl http://127.0.0.1:18080/health
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+### Usage Examples
+
+```python
+import asyncio
+from candidate.scraper import scrape_portal
+from candidate.enricher import enrich_cig, enrich_batch
+
+BASE_URL = "http://127.0.0.1:18080"
+
+async def main():
+    tenders = await scrape_portal(BASE_URL)
+    detail = await enrich_cig("A0123456BC", BASE_URL)
+    batch = await enrich_batch(["A0123456BC", "B9876543DE"], BASE_URL)
+
+asyncio.run(main())
+```
+
+### Verification
+
+Run the provided evaluation tests when available:
+
+```bash
+pytest -q
+```
+
+Local smoke checks used during development:
+
+- Parser cases for Italian amounts, `DD/MM/YYYY`, `DD mese YYYY`, ISO dates,
+  and placeholder CIGs.
+- Full scraper run against the mock portal, returning all 15 tenders.
+- CIG enrichment through the Playwright SPA flow, including successful details,
+  missing `bando`, list-shaped API responses, invalid CIGs, and rate limiting.
+- `python3.11 -m compileall -q candidate`.
+
+### Key Technical Decisions and Trade-offs
+
+- The scraper uses `httpx` plus `BeautifulSoup` instead of a browser for Level 2.
+  The listing/detail HTML contains enough data to scrape reliably, and this keeps
+  the scraper faster while still handling the simulated portal issues: session
+  cookie, pagination, transient `503`, multiple detail layouts, hidden stale
+  values, noscript fallback values, JavaScript-injected amounts, and JavaScript
+  document toggles.
+- Document links are normalized with `urljoin`, so relative, root-relative, and
+  already-absolute URLs all satisfy the model requirement for absolute URLs.
+- Placeholder or malformed CIG values are returned as `None` in scraped tenders.
+  This avoids propagating values such as `0000000000`, `0000000001`, and
+  `XXXXXXXXXX` as real identifiers.
+- Level 3 uses Playwright for the SPA path because the page content and mosparo
+  consent flow are generated client-side. A direct HTTP fallback is kept for
+  environments where Chromium is unavailable, but the primary path automates the
+  browser interaction.
+- ANAC API calls are paced with a shared async lock to respect the mock F5-style
+  rate limit, including concurrent caller scenarios.
+
+### Assumptions and Notes
+
+- The mock server is treated as read-only. Its implementation is distributed as
+  compiled files in this assessment, so no server internals were modified.
+- `pyproject.toml` includes explicit setuptools package discovery for this flat
+  repository layout. Without it, `pip install -e .` can fail because both
+  `candidate` and `mock_server` are top-level packages.
+- The local checkout may not include `evaluation/tests`; in that case `pytest -q`
+  reports that no tests were collected. The command is still the expected test
+  entry point when the evaluator supplies those tests.
