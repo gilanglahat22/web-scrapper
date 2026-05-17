@@ -30,6 +30,21 @@ uvicorn mock_server.app:app --host 127.0.0.1 --port 18080
 
 Verify: `curl http://127.0.0.1:18080/health` should return `{"status":"ok"}`.
 
+Important: `Uvicorn running on http://127.0.0.1:18080` means the server started
+successfully. The mock server does not define a route for `/`, so opening
+`http://127.0.0.1:18080/` in a browser will log lines like
+`GET / HTTP/1.1" 404 Not Found` and `GET /favicon.ico HTTP/1.1" 404 Not Found`.
+That is expected and not a startup error. Use these entry points instead:
+
+- Maggioli portal: `http://127.0.0.1:18080/PortaleAppalti/it/homepage.wp`
+- ANAC CIG SPA: `http://127.0.0.1:18080/cig/A0123456BC`
+
+If you want to hide benign access logs while running the server, use:
+
+```bash
+uvicorn mock_server.app:app --host 127.0.0.1 --port 18080 --no-access-log
+```
+
 ---
 
 ## What you need to do
@@ -146,6 +161,16 @@ Expected response:
 {"status":"ok"}
 ```
 
+To open the mock portals in a browser, use:
+
+- `http://127.0.0.1:18080/PortaleAppalti/it/homepage.wp`
+- `http://127.0.0.1:18080/cig/A0123456BC`
+
+Note: `http://127.0.0.1:18080/` is not a landing page in this mock server and
+returns `404 Not Found` by design. Seeing `GET /` or `GET /favicon.ico` with
+`404 Not Found` in the Uvicorn log only means a browser or tool requested the
+wrong URL.
+
 ### Usage Examples
 
 ```python
@@ -198,7 +223,9 @@ Local smoke checks used during development:
   environments where Chromium is unavailable, but the primary path automates the
   browser interaction.
 - ANAC API calls are paced with a shared async lock to respect the mock F5-style
-  rate limit, including concurrent caller scenarios.
+  rate limit, including concurrent caller scenarios. If the mock ANAC endpoint
+  returns the `Request Rejected` page, the enrichment code shows a cooldown
+  message in the Playwright page, waits, and retries before failing.
 
 ### Assumptions and Notes
 

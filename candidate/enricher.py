@@ -6,6 +6,7 @@ Explore /cig/{CIG} with DevTools to understand the SPA flow.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
 from urllib.parse import urljoin
@@ -18,6 +19,8 @@ from models import CIGDetail
 
 _API_PATH = "api/v1/operations/consultaCIG/1.0/exec"
 _RATE_LIMIT_SECONDS = 5.1
+_RATE_LIMIT_ATTEMPTS = 5
+_logger = logging.getLogger(__name__)
 _rate_lock = asyncio.Lock()
 _last_request_by_base: dict[str, float] = {}
 
@@ -73,12 +76,16 @@ async def _fetch_payload_via_playwright(root_url: str, cig: str) -> Any:
                 timeout=8_000,
             )
 
-            for attempt in range(3):
+            for attempt in range(_RATE_LIMIT_ATTEMPTS):
                 response = await _rate_limited_playwright_search(page, root_url)
                 if response.status == 403:
                     text = await response.text()
-                    if "Request Rejected" in text and attempt < 2:
-                        await asyncio.sleep(_RATE_LIMIT_SECONDS)
+                    if "Request Rejected" in text and attempt < _RATE_LIMIT_ATTEMPTS - 1:
+                        await _cooldown_before_retry(
+                            attempt,
+                            page=page,
+                            reason="ANAC/F5 rate limit",
+                        )
                         continue
 
                 if not response.ok:
@@ -117,7 +124,7 @@ async def _post_cig_api(
     root_url: str,
     cig: str,
     *,
-    attempts: int = 3,
+    attempts: int = _RATE_LIMIT_ATTEMPTS,
 ) -> httpx.Response:
     url = urljoin(root_url, _API_PATH)
     last_response: httpx.Response | None = None
@@ -127,7 +134,7 @@ async def _post_cig_api(
 
         if _is_rate_limited(response) and attempt < attempts - 1:
             last_response = response
-            await asyncio.sleep(_RATE_LIMIT_SECONDS)
+            await _cooldown_before_retry(attempt, reason="ANAC/F5 rate limit")
             continue
 
         response.raise_for_status()
@@ -159,6 +166,60 @@ async def _rate_limited_post(
 
 def _is_rate_limited(response: httpx.Response) -> bool:
     return response.status_code == 403 and "Request Rejected" in response.text
+
+
+async def _cooldown_before_retry(
+    attempt: int,
+    *,
+    page: Any | None = None,
+    reason: str,
+) -> None:
+    delay = _cooldown_seconds(attempt)
+    _logger.info("%s detected, cooling down for %.1f seconds before retry", reason, delay)
+
+    remaining = int(delay)
+    while remaining > 0:
+        await _set_page_cooldown_message(page, remaining)
+        await asyncio.sleep(1)
+        remaining -= 1
+
+    remainder = delay - int(delay)
+    if remainder > 0:
+        await asyncio.sleep(remainder)
+
+    await _set_page_cooldown_message(page, 0)
+
+
+def _cooldown_seconds(attempt: int) -> float:
+    return _RATE_LIMIT_SECONDS * min(attempt + 1, 3)
+
+
+async def _set_page_cooldown_message(page: Any | None, seconds_remaining: int) -> None:
+    if page is None:
+        return
+
+    if seconds_remaining > 0:
+        message = (
+            "Rate limit temporaneo rilevato. "
+            f"Attendo {seconds_remaining}s prima di riprovare..."
+        )
+        disabled = True
+    else:
+        message = "Cooldown completato. Riprovo la ricerca..."
+        disabled = False
+
+    try:
+        await page.evaluate(
+            """({ message, disabled }) => {
+                const result = document.getElementById('result');
+                const button = document.getElementById('cerca-btn');
+                if (result) result.textContent = message;
+                if (button) button.disabled = disabled;
+            }""",
+            {"message": message, "disabled": disabled},
+        )
+    except Exception:
+        return
 
 
 async def _rate_limited_playwright_search(page: Any, root_url: str) -> Any:
